@@ -22,3 +22,4 @@ data/*
 *.zip
 catboost_info/
 *.ipynb
+!/house_prices.zip
