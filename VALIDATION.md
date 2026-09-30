@@ -29,5 +29,5 @@ Local test versions: NumPy 2.5.3, pandas 3.0.6, scikit-learn 1.9.1,
 LightGBM 4.7.0, XGBoost 3.4.1, CatBoost 1.2.10, Boruta 0.4.3, and pytest 9.1.1.
 The included CI targets Python 3.11/3.12; those remote jobs have not been run.
 
-The source notebook is copied unchanged from `Untitled235.ipynb`.
+Source notebook: `Untitled235.ipynb` (kept outside this repository).
 SHA-256: `81ca07a286c36baeb454af48be3a791da8621a57b3738af9dc791acdc4cf3f45`.

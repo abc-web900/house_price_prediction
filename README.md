@@ -1,220 +1,186 @@
-## Run the project
+# House sale prices: notebook results and findings
 
-Put the original unprocessed training CSV in `data/train.csv` and the external
-prediction CSV in `data/test.csv`. Run these commands from this project folder:
 
-```bash
-python -m venv .venv
-# Windows PowerShell:
-.venv\Scripts\Activate.ps1
-# Linux/macOS: source .venv/bin/activate
-python -m pip install -r requirements.txt
+## Dataset and preparation
 
-python scripts/run_eda.py
-python scripts/run_train.py
-python scripts/run_predict.py
-python scripts/build_report.py
-```
+The original training table contained **1,460 rows and 81 columns**, including
+`Id` and the target `SalePrice`. Dropping every column with at least one missing
+value left **62 columns**: the ID, target, and **60 predictors**. No row removal
+was shown at that step.
 
-The scripts import their local `src/` directory, so an editable installation is
-optional. Use a new output directory for another training or EDA run; existing
-results are preserved. CLI paths are relative to your current directory, while
-default paths resolve relative to the project. No environment files are loaded.
+Some of the missing-value counts recorded before dropping columns were:
 
-Prediction creates **`outputs/submission.csv` with `Id,SalePrice`**. Missing
-values and category strings should remain raw: the saved model handles them.
-`SalePrice` is optional in the prediction CSV. When true labels are supplied,
-prediction also writes a metrics JSON; unlabeled input yields predictions only.
+| Column | Missing rows |
+| --- | ---: |
+| `PoolQC` | 1,453 |
+| `MiscFeature` | 1,406 |
+| `Alley` | 1,369 |
+| `Fence` | 1,179 |
+| `MasVnrType` | 872 |
+| `FireplaceQu` | 690 |
+| `LotFrontage` | 259 |
+| `GarageYrBlt` | 81 |
+| `MasVnrArea` | 8 |
+| `Electrical` | 1 |
 
-## Layout
+This complete-column rule removed 19 columns, including columns with only one
+or a few missing entries. The module defaults to training-fold imputation so
+those predictors can be retained; their benefit needs evaluation in a new run.
 
-```text
-house_prices/
-├── scripts/
-│   ├── run_train.py
-│   ├── run_predict.py
-│   ├── run_eda.py
-│   ├── build_report.py
-│   └── make_demo_data.py
-├── src/house_prices/
-│   ├── config.py          # profiles and paths
-│   ├── schema.py          # 79 raw predictors; Id and SalePrice excluded
-│   ├── data.py            # validation, target parsing, ID preservation
-│   ├── features.py        # house features, target encoding, KNN comparables
-│   ├── selection.py       # null importance, stability selection, Boruta
-│   ├── models.py          # regressors and complete voting/stacking pipelines
-│   ├── validation.py      # splits, smearing calibration, metrics
-│   ├── pipeline.py        # training, evaluation, model export
-│   ├── predict.py         # saved-model prediction
-│   ├── artifacts.py       # model persistence, hashes, dependency versions
-│   ├── eda.py
-│   ├── report.py
-│   ├── demo.py
-│   └── __init__.py
-├── data/README.md         # actual notebook findings
-├── examples/predict.csv  # synthetic input example
-├── outputs/
-├── tests/
-├── .github/workflows/ci.yml
-├── Untitled235.ipynb      # unchanged source notebook
-├── requirements.txt
-├── pyproject.toml
-└── VALIDATION.md
-```
+## Encoding and feature engineering
 
-## Models and experiment options
+The notebook encoded **27 categorical features** using smoothed target means
+and five inner folds. Smoothing used a strength of 10. Neighborhood had the
+highest reported cardinality at **25 values**, followed by `Exterior2nd` at 16
+and `Exterior1st` at 15. IDs and the target were excluded from model inputs.
 
-The default profile compares a median baseline, ridge, and random forest with
-original/engineered features and a log target. It requires only the core
-dependencies. The full profile adds the notebook's linear models, boosting
-families, ensembles, extended features, and a small hyperparameter search.
+The main engineered features were:
 
-```bash
-python -m pip install -e ".[boosting,selection]"
-python scripts/run_train.py --profile full --output outputs/full
-```
-
-The `notebook` profile runs XGBoost, CatBoost, equal voting, and Ridge stacking
-with Boruta, engineered features, log targets, 1,000 boosting rounds, and five
-folds. It can be expensive because feature selection is refitted inside the
-evaluation and stacking folds.
-
-```bash
-python scripts/run_train.py --profile notebook --output outputs/notebook_recipe
-```
-
-| Option | Choices / purpose |
+| Feature | Calculation |
 | --- | --- |
-| `--models` | `dummy`, `linear`, `ridge`, `lasso`, `elasticnet`, `random_forest`, `lightgbm`, `xgboost`, `catboost`, `voting`, `stacking`, `weighted` |
-| `--feature-sets` | `original`, `engineered`, `extended`, `peer` |
-| `--target-transforms` | `raw`, `log`; accepts multiple values for comparison |
-| `--encoding` | `target` (smoothed cross-fitted means) or `onehot` |
-| `--selection` | `none`, `null95`, `null80`, `stable_null`, `boruta` |
-| `--missing-policy` | `impute` (default) or training-fold complete-column `drop` |
-| `--primary-metric` | Original-price `rmse` (default) or `mae` |
-| `--search-iterations` | Per-candidate randomized parameter trials; zero disables search |
-| `--selection-iterations` | Null permutations per run or Boruta maximum iterations |
-| `--no-smearing` | Keep the inverse log transform without calibration |
+| `TotalSF` | `TotalBsmtSF + 1stFlrSF + 2ndFlrSF` |
+| `TotalBath` | `FullBath + 0.5 × HalfBath + BsmtFullBath + 0.5 × BsmtHalfBath` |
+| `AgeAtSale` | `YrSold - YearBuilt` |
+| `SF_Rel_to_Nbhd` | `TotalSF` / neighborhood median `TotalSF` |
+| `Qual_SF_Interact` | `OverallQual × TotalSF` |
+| `Peer_Comp_Price` | Distance-weighted price from five similar houses using size, quality, age, and encoded neighborhood |
 
-`--seed`, `--cv-folds`, `--n-estimators`, and `--n-jobs` control reproducibility
-and computation. `python scripts/run_train.py --help` lists all options.
+The final three feature groups were later experiments. They were not part of
+the configuration that produced the notebook's lowest printed RMSE.
 
-For example, compare the notebook's extra neighborhood/quality features and
-KNN-comparable feature using one family:
+## Null importance versus Boruta
 
-```bash
-python scripts/run_train.py --models catboost --feature-sets engineered extended peer --output outputs/features
-```
+Null importance compared actual LightGBM feature gain against gain under shuffled
+targets. The first test used **50 shuffled-target iterations** and the **95th
+percentile**, selecting only **4 of 60 features**:
 
-Equal voting and stacking combine XGBoost and CatBoost. Weighted voting uses
-30% XGBoost and 70% CatBoost, reproducing the notebook's fixed blend recipe
-without claiming it is optimal. With a log target, those ensembles combine
-log predictions before converting back to price units.
+- `OverallQual`
+- `GrLivArea`
+- `Neighborhood_encoded`
+- `GarageCars`
 
-## Preprocessing and features
+Reducing the percentile to 80 still selected four features. A stability check
+using five runs, 20 permutations per run, and a four-of-five pass requirement
+returned the same four features.
 
-All 79 original predictor columns are required; their order does not matter.
-The complete list is in [schema.py](src/house_prices/schema.py). Extra columns
-are ignored. `Id` is optional, preserved as text when present, and never used
-as a predictor. Training requires at least 80 rows, unique nonempty IDs when
-present, and finite positive prices. Exact duplicate records are removed first.
+After adding `TotalSF`, `TotalBath`, and `AgeAtSale`, the stable set changed to
+`OverallQual`, `GarageCars`, `Neighborhood_encoded`, `TotalSF`, and `TotalBath`.
+CatBoost's printed original-price RMSE improved from **31,628.22** on the earlier
+four-feature/log-target set to **26,957.85** on the engineered stable set.
 
-The notebook dropped every column with any missing values. The default module
-keeps those columns, fills numeric values using training-fold medians (zero for
-entirely missing columns), and labels missing categories `Missing`. The optional
-`drop` policy chooses complete columns using each training fold only.
+Boruta then used a depth-five random forest and a 90th-percentile shadow-feature
+threshold. It confirmed **31 features**, with `RoofStyle_encoded` remaining
+tentative. The confirmed set included quality, area/capacity, construction years,
+garage and basement attributes, the three engineered features, and encoded
+location/property/quality categories. CatBoost on that set achieved **24,420.70
+RMSE**. The less restrictive feature set worked better in the recorded comparison
+than the four- or five-feature null-importance sets.
 
-`engineered` adds `TotalSF`, `TotalBath`, and `AgeAtSale`. `extended` also adds
-size relative to the neighborhood's training median and quality × size.
-Unknown neighborhoods use the overall training median. `peer` adds KNN peer
-prices through inner cross-fitting, using size, quality, age, and one-hot
-neighborhood for similarity. Its scaler and nearest-neighbor reference rows
-are also fitted within those inner folds.
+## Recorded model results
 
-Target encoding learns smoothed categorical target means. Training rows receive
-inner-fold encodings computed without that fold's labels, including the smoothing
-prior. Inference uses mappings fitted on training labels only; unseen categories
-use the training prior. Raw-price models encode raw prices, while log-target
-models encode log prices.
+The initial table reports mean five-fold RMSE from `cross_val_score` or the
+best search score. Later milestones report RMSE over pooled out-of-fold
+predictions, usually after reversing a log target. Those aggregation methods
+and feature sets differ, so this is a record of experiments rather than one
+controlled leaderboard.
 
-Null-importance selection uses LightGBM and 95th/80th percentile shuffled-target
-thresholds. Stability selection keeps features passing an 80th-percentile test
-in at least four of five runs. Boruta uses a depth-five random forest and the
-90th-percentile shadow threshold. If a run confirms no feature, the selector
-keeps its strongest-ranked feature and records that fallback in
-`selected_features.csv`; it does not claim that feature passed the test.
+| Initial model on the four selected features | Mean CV RMSE |
+| --- | ---: |
+| Linear regression | 37,477.75 |
+| Ridge | 37,477.64 |
+| Lasso | 37,477.74 |
+| ElasticNet | 37,494.06 |
+| Tuned LightGBM | 33,437.21 |
+| Tuned XGBoost | 31,638.23 |
+| Tuned CatBoost | 31,429.06 |
+| XGBoost/CatBoost equal voting | 31,283.54 |
+| XGBoost/CatBoost Ridge stacking | 31,450.06 |
 
-## Evaluation and smearing
+| Later experiment | Printed original-price RMSE |
+| --- | ---: |
+| Log-target CatBoost, original stable four features | 31,628.22 |
+| Log-target CatBoost, engineered stable five features | 26,957.85 |
+| Voting, engineered stable features | 27,085.51 |
+| Stacking, engineered stable features | 27,052.25 |
+| CatBoost, Boruta features | 24,420.70 |
+| Voting, Boruta features | 23,906.68 |
+| Stacking, Boruta features | 23,898.85 |
+| **Boruta stacking + smearing correction** | **23,816.76** |
+| Neighborhood relativity + quality/size interactions | 24,000.93 |
+| Refined parameters + stacking + smearing | 24,362.61 |
+| Refined 70% CatBoost / 30% XGBoost blend + smearing | 24,547.08 |
+| Added KNN comparable-price feature | 24,425.66 |
+| Refined passthrough meta-stacking with KNN + smearing | 24,978.44 |
 
-1. Reserve 20% of rows for holdout and 16% for calibration, leaving about 64%
-   for training CV. Splits are fixed by the configured seed.
-2. Select model/feature/target recipes using the same training folds. Learned
-   preprocessing, supervised encoding, selection, and peer features stay within
-   each outer training fold. Stacking includes complete pipelines in each base
-   estimator, so inner stack folds also refit those transformations.
-3. Fit the selected recipe on training rows. Estimate a smearing factor from
-   the separate calibration set and retain it only if it improves the configured
-   calibration metric. The holdout does not influence this decision.
-4. Freeze that model and factor, evaluate the holdout, and export the exact
-   evaluated workflow. It is not refitted on the calibration/holdout rows.
+The best recorded stack used XGBoost with **1,000 trees, learning rate 0.05,
+maximum depth 3, and subsample 0.8**, plus CatBoost with **1,000 iterations,
+learning rate 0.05, and depth 6**. The meta-regressor was Ridge with `alpha=1.0`.
+Both base estimators learned `log1p(SalePrice)`.
 
-For a `log1p` target, corrected prices use **`exp(predicted_log) * factor - 1`**.
-This corrects the notebook's slightly different `expm1(predicted_log) * factor`
-expression. All predicted prices are clipped at zero. RMSE, MAE, and residuals
-are reported in original price units; RMSLE is also saved.
+Smearing lowered the printed RMSE from 23,898.85 to 23,816.76, a small change of
+**82.09**. The correction factor was estimated from the same pooled residuals
+used to report the corrected score, so this gain needs separate validation.
 
-The notebook performed target encoding and feature selection on the whole
-dataset before later CV, reused folds during tuning, and estimated/reported
-smearing on the same pooled predictions. Its printed results are exploratory.
-This module deliberately changes those evaluation boundaries, so reproducing
-23,816.76 is not an expected test assertion. The original notebook remains
-available for historical plots and the later passthrough meta-stack experiment.
+## Error concentration and variability
 
-## Saved artifacts and reports
+A later shuffled five-fold diagnostic on the extended feature set reported
+**mean RMSE 26,690.60 with standard deviation 5,170.22**. This used a different
+fold setup and feature recipe from the best printed result. It shows meaningful
+variation across folds; it is not a confidence interval for 23,816.76 or a
+statistical significance test between models.
 
-Training writes these files to `outputs/run/` by default:
+The notebook also divided errors from the earlier smeared stack into actual-price
+deciles:
 
-- `model.joblib`: preprocessing, feature selection, estimator(s), and smearing factor.
-- `metadata.json`, `config.json`, `requirements.lock.txt`: schema, parameters,
-  split sizes, source/data/model hashes, and dependency versions.
-- `cv_results.csv`, `cv_folds.csv`, optional `search_*.csv`: development comparisons.
-- `split_assignments.csv`: original indices, IDs, and assigned partitions.
-- `smearing_validation.csv`: corrected and uncorrected calibration scores.
-- `metrics.json`, `holdout_predictions.csv`: final evaluation and individual errors.
-- `selected_features.csv`: actual fitted features, selections, and fallback flags.
-- `holdout_price_deciles.csv`, `holdout_diagnostics.png`: error patterns by price.
+| Price decile, low to high | Mean actual price | RMSE | Share of total squared error |
+| --- | ---: | ---: | ---: |
+| 0 | 85,936.19 | 19,376.13 | 6.62% |
+| 1 | 115,286.73 | 13,964.83 | 3.51% |
+| 2 | 130,121.58 | 13,007.09 | 2.94% |
+| 3 | 141,416.55 | 18,567.20 | 6.24% |
+| 4 | 155,136.42 | 16,820.76 | 4.89% |
+| 5 | 171,691.56 | 14,395.36 | 3.60% |
+| 6 | 187,710.34 | 18,257.34 | 5.88% |
+| 7 | 214,336.09 | 18,575.62 | 6.21% |
+| 8 | 252,606.19 | 28,325.39 | 13.95% |
+| 9 | 357,554.33 | **51,347.87** | **46.16%** |
 
-`build_report.py` creates Markdown and HTML reports from these saved results.
-It does not retrain the model. EDA separately writes missing-value tables,
-numeric summaries/correlations, category counts, target associations, and plots.
+The most expensive decile contributed nearly half the total squared error.
+Together, the top two deciles contributed about **60.11%**. The highest decile
+did not exceed the notebook's suggested 50% heuristic by itself, but the table
+still shows a substantial concentration of error among expensive homes.
 
-Only load trusted model files with compatible project code and dependencies.
-To predict without repeating any training:
+## What worked and what did not
 
-```bash
-python scripts/run_predict.py --model outputs/run/model.joblib --data data/test.csv --output outputs/submission.csv
-```
+- **House-size and bathroom engineering improved the conservative feature set.**
+  `TotalSF` and `TotalBath` survived the stability selection and accompanied a
+  substantial reduction in the recorded CatBoost RMSE.
+- **Boruta retained useful supporting variables.** Its 31-feature set outperformed
+  the much smaller null-importance sets in the recorded experiments.
+- **Voting and stacking helped on the Boruta set**, although the gap between
+  their RMSEs was only 7.83 and does not establish a reliable ranking.
+- **Smearing provided a small recorded improvement**, but its evaluation reused
+  the residuals that estimated the correction.
+- **Log transformation alone did not improve the original four-feature setup.**
+  Its CatBoost result was slightly worse than the earlier raw-target tuned model.
+- **Later complexity failed to beat the best recorded result:** extended
+  interactions, refined searches, the 70/30 blend, KNN comparables, and the
+  passthrough meta-stack all produced higher printed RMSEs.
+- **Expensive homes remained the main source of squared error.** More complex
+  modeling did not remove that weakness.
 
-## Verify with synthetic data
+## Limits of the recorded evaluation
 
-```bash
-python scripts/make_demo_data.py --output data/demo.csv --rows 240
-python scripts/run_train.py --data data/demo.csv --output outputs/demo --models ridge --feature-sets engineered
-python scripts/run_predict.py --model outputs/demo/model.joblib --data examples/predict.csv --output outputs/demo_submission.csv
-python scripts/build_report.py --run outputs/demo
-```
+The notebook produced exploratory CV/OOF scores, not an independent final test
+score. Its target encoding was calculated across the full dataset before later
+model CV, and its smoothing prior used the full target mean. Feature selection
+also used the full target, while neighborhood medians and the KNN scaler were
+prepared globally. Consequently, later held-out folds could influence learned
+inputs or feature choices. Reusing CV during parameter search and comparing many
+variants on the same rows adds selection optimism.
 
-Synthetic rows verify software behavior only. Real training and test CSVs are
-not included in this project. Generated data, model files, archives, and
-environment files are excluded from version control.
-
-Tests and packaging checks:
-
-```bash
-python -m pip install -e ".[dev]"
-python -m pytest
-ruff check src scripts tests
-python -m build
-```
-
-See [VALIDATION.md](VALIDATION.md) for checks actually completed for this conversion.
+The converted module fits learned steps inside training folds and estimates
+smearing on a separate validation partition before scoring an untouched holdout.
+Its future scores must be read from that run's generated metrics, not copied from
+the historical notebook. The source notebook did not record a separate external
+`test.csv` prediction run, a submission score, or an external-test RMSE.

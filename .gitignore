@@ -21,3 +21,4 @@ data/*
 *.pkl
 *.zip
 catboost_info/
+*.ipynb

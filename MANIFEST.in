@@ -1,5 +1,4 @@
 include README.md VALIDATION.md requirements.txt
-include Untitled235.ipynb
 recursive-include data *.md
 recursive-include examples *.csv
 recursive-include scripts *.py
